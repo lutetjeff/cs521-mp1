@@ -45,15 +45,55 @@ void gemm_cpu_o0(float* A, float* B, float *C, int M, int N, int K) {
 // Your optimized implementations go here
 // note that for o4 you don't have to change the code, but just the compiler flags. So, you can use o3's code for that part
 void gemm_cpu_o1(float* A, float* B, float *C, int M, int N, int K) {
-
+  for (int k = 0; k < K; k++) {
+    for (int i = 0; i < M; i++) {
+      for (int j = 0; j < N; j++) {
+	C[i * N + j]  += A[i * K + k]  * B[k * N + j];
+      }
+    }
+  }
 }
 
-void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
+// epyc 9334, 32KiB L1 per core
+#define TILE_I 64
+#define TILE_J 64
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
+void gemm_cpu_o2(float* A, float* B, float *C, int M, int N, int K) {
+	for (int ti = 0; ti < M; ti += TILE_I) {
+        int i_end = MIN(ti + TILE_I, M);
+        for (int tj = 0; tj < N; tj += TILE_J) {
+            int j_end = MIN(tj + TILE_J, N);
+  			for (int k = 0; k < K; k++) {
+                for (int i = ti; i < i_end; i++) {
+                	float a = A[i * K + k];
+                    for (int j = tj; j < j_end; j++) {
+                        C[i * N + j] += a * B[k * N + j]; 
+                    }
+                }
+            }
+        }
+  	}
 }
 
 void gemm_cpu_o3(float* A, float* B, float *C, int M, int N, int K) {
-
+	#pragma omp parallel for
+	for (int ti = 0; ti < M; ti += TILE_I) {
+        int i_end = MIN(ti + TILE_I, M);
+        #pragma omp parallel for
+        for (int tj = 0; tj < N; tj += TILE_J) {
+            int j_end = MIN(tj + TILE_J, N);
+  			for (int k = 0; k < K; k++) {
+                for (int i = ti; i < i_end; i++) {
+                	float a = A[i * K + k];
+                	#pragma GCC ivdep
+                    for (int j = tj; j < j_end; j++) {
+                        C[i * N + j] += a * B[k * N + j]; 
+                    }
+                }
+            }
+        }
+  	}
 }
 
 
@@ -66,6 +106,10 @@ int main(int argc, char* argv[]) {
 	int M = atoi(argv[1]);
 	int N = atoi(argv[2]);
 	int K = atoi(argv[3]);
+
+	int run_o0 = 1;
+	if (argc >= 5) 
+		run_o0 = atoi(argv[4]);
 
 	float* A = new float[M * K]();
 	float* B = new float[K * N]();
@@ -81,15 +125,19 @@ int main(int argc, char* argv[]) {
 	// We may (at discretion) verify that your code is correct.
 	float* refC = new float[Ref::M * Ref::N]();
 	auto ref = Ref();
-	CHECK(gemm_cpu_o0)
-	CHECK(gemm_cpu_o1)
-	CHECK(gemm_cpu_o2)
+	if (run_o0) {
+		CHECK(gemm_cpu_o0)
+		CHECK(gemm_cpu_o1)
+		CHECK(gemm_cpu_o2)
+	}
 	CHECK(gemm_cpu_o3)
 	delete[] refC;
-	
-	TIME(gemm_cpu_o0)
-	TIME(gemm_cpu_o1)
-	TIME(gemm_cpu_o2)
+
+	if (run_o0) {
+		TIME(gemm_cpu_o0)
+		TIME(gemm_cpu_o1)
+		TIME(gemm_cpu_o2)
+	}
 	TIME(gemm_cpu_o3)
 
 	delete[] A;
